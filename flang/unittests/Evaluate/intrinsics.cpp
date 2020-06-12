@@ -155,6 +155,8 @@ void TestIntrinsics() {
   using Complex8 = Type<TypeCategory::Complex, 8>;
   using Char = Type<TypeCategory::Character, 1>;
   using Log4 = Type<TypeCategory::Logical, 4>;
+  // Trying to test num_images() with argument of type TEAM_TYPE but unsure how
+  //  using Team = Type<TypeCategory::Derived>;
 
   TestCall{defaults, table, "bad"}
       .Push(Const(Scalar<Int4>{}))
@@ -261,6 +263,9 @@ void TestIntrinsics() {
   TestCall{defaults, table, "num_images"}
       .DoCall(Int4::GetType());
   TestCall{defaults, table, "num_images"}
+      .Push(Const(Scalar<Int1>{}))
+      .DoCall(Int4::GetType());
+  TestCall{defaults, table, "num_images"}
       .Push(Const(Scalar<Int4>{}))
       .DoCall(Int4::GetType());
   TestCall{defaults, table, "num_images"}
@@ -269,6 +274,12 @@ void TestIntrinsics() {
   TestCall{defaults, table, "num_images"}
       .Push(Named("team_number", Const(Scalar<Int4>{})))
       .DoCall(Int4::GetType());
+
+  // Trying to test num_images() with argument of type TEAM_TYPE but unsure how
+  //  TestCall{defaults, table, "num_images"}
+  //  .Push(Named("team", Const(Team{})))
+  //      .DoCall(Int4::GetType());
+
   TestCall{defaults, table, "num_images"}
       .Push(Const(Scalar<Int4>{}))
       .Push(Const(Scalar<Int4>{}))
@@ -279,6 +290,7 @@ void TestIntrinsics() {
   TestCall{defaults, table, "num_images"}.Push(Const(Scalar<Char>{})).DoCall();     // bad type
   TestCall{defaults, table, "num_images"}.Push(Const(Scalar<Log4>{})).DoCall();     // bad type
   TestCall{defaults, table, "num_images"}.Push(Const(Scalar<Complex8>{})).DoCall(); // bad type
+  TestCall{defaults, table, "num_images"}.Push(Const(Scalar<Real4>{})).DoCall();    // bad type
 
   // TODO: test other intrinsics
 }
