@@ -185,7 +185,10 @@ module m
                                    ! implicit sync all
     !ERROR: Procedure 'this_image' referenced in pure subprogram 's14' must be pure too
     img = this_image()
-    !ERROR: Procedure 'num_images' referenced in pure subprogram 's14' must be pure too
+
+    ! num_images() is now evaluted as an intrinsic function
+    ! no longer produces an error because
+    ! "All standard intrinsic functions are pure" - 16.1 of the Fortran Standard 2018
     nimgs = num_images()
     i = img                       ! i is ready to use
 
