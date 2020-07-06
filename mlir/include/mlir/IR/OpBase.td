@@ -1737,6 +1737,9 @@ def AttrSizedOperandSegments : NativeOpTrait<"AttrSizedOperandSegments">;
 // should be named as `result_segment_sizes`.
 def AttrSizedResultSegments  : NativeOpTrait<"AttrSizedResultSegments">;
 
+// Op attached regions have no arguments
+def NoRegionArguments : NativeOpTrait<"NoRegionArguments">;
+
 //===----------------------------------------------------------------------===//
 // OpInterface definitions
 //===----------------------------------------------------------------------===//
@@ -1761,8 +1764,8 @@ class OpInterfaceTrait<string name, code verifyBody = [{}]>
 }
 
 // This class represents a single, optionally static, interface method.
-// Note: non-static interface methods have an implicit 'op' parameter
-// corresponding to an instance of the derived operation.
+// Note: non-static interface methods have an implicit parameter, either
+// $_op/$_attr/$_type corresponding to an instance of the derived value.
 class InterfaceMethod<string desc, string retTy, string methodName,
                       dag args = (ins), code methodBody = [{}],
                       code defaultImplementation = [{}]> {
@@ -1792,8 +1795,8 @@ class StaticInterfaceMethod<string desc, string retTy, string methodName,
     : InterfaceMethod<desc, retTy, methodName, args, methodBody,
                       defaultImplementation>;
 
-// OpInterface represents an interface regarding an op.
-class OpInterface<string name> : OpInterfaceTrait<name> {
+// Interface represents a base interface.
+class Interface<string name> {
   // A human-readable description of what this interface does.
   string description = "";
 
@@ -1806,6 +1809,23 @@ class OpInterface<string name> : OpInterfaceTrait<name> {
   // An optional code block containing extra declarations to place in the
   // interface declaration.
   code extraClassDeclaration = "";
+}
+
+// AttrInterface represents an interface registered to an attribute.
+class AttrInterface<string name> : Interface<name> {
+  // An optional code block containing extra declarations to place in the
+  // interface trait declaration.
+  code extraTraitClassDeclaration = "";
+}
+
+// OpInterface represents an interface registered to an operation.
+class OpInterface<string name> : Interface<name>, OpInterfaceTrait<name>;
+
+// TypeInterface represents an interface registered to a type.
+class TypeInterface<string name> : Interface<name> {
+  // An optional code block containing extra declarations to place in the
+  // interface trait declaration.
+  code extraTraitClassDeclaration = "";
 }
 
 // Whether to declare the op interface methods in the op's header. This class

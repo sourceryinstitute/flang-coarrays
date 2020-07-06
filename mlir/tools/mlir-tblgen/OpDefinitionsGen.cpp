@@ -14,8 +14,8 @@
 #include "OpFormatGen.h"
 #include "mlir/TableGen/Format.h"
 #include "mlir/TableGen/GenInfo.h"
+#include "mlir/TableGen/Interfaces.h"
 #include "mlir/TableGen/OpClass.h"
-#include "mlir/TableGen/OpInterfaces.h"
 #include "mlir/TableGen/OpTrait.h"
 #include "mlir/TableGen/Operator.h"
 #include "mlir/TableGen/SideEffects.h"
@@ -36,10 +36,14 @@ using namespace mlir::tblgen;
 
 cl::OptionCategory opDefGenCat("Options for -gen-op-defs and -gen-op-decls");
 
-static cl::opt<std::string>
-    opFilter("op-regex",
-             cl::desc("Regex of name of op's to filter (no filter if empty)"),
-             cl::cat(opDefGenCat));
+static cl::opt<std::string> opIncFilter(
+    "op-include-regex",
+    cl::desc("Regex of name of op's to include (no filter if empty)"),
+    cl::cat(opDefGenCat));
+static cl::opt<std::string> opExcFilter(
+    "op-exclude-regex",
+    cl::desc("Regex of name of op's to exclude (no filter if empty)"),
+    cl::cat(opDefGenCat));
 
 static const char *const tblgenNamePrefix = "tblgen_";
 static const char *const generatedArgName = "odsArg";
@@ -1469,7 +1473,7 @@ void OpEmitter::genOpInterfaceMethod(const tblgen::InterfaceOpTrait *opTrait) {
   alwaysDeclaredMethods.insert(alwaysDeclaredMethodsVec.begin(),
                                alwaysDeclaredMethodsVec.end());
 
-  for (const OpInterfaceMethod &method : interface.getMethods()) {
+  for (const InterfaceMethod &method : interface.getMethods()) {
     // Don't declare if the method has a body.
     if (method.getBody())
       continue;
@@ -1482,7 +1486,7 @@ void OpEmitter::genOpInterfaceMethod(const tblgen::InterfaceOpTrait *opTrait) {
     std::string args;
     llvm::raw_string_ostream os(args);
     interleaveComma(method.getArguments(), os,
-                    [&](const OpInterfaceMethod::Argument &arg) {
+                    [&](const InterfaceMethod::Argument &arg) {
                       os << arg.type << " " << arg.name;
                     });
     opClass.newMethod(method.getReturnType(), method.getName(), os.str(),
@@ -1601,7 +1605,12 @@ void OpEmitter::genTypeInterfaceMethods() {
     if (type.isArg()) {
       auto argIndex = type.getArg();
       assert(!op.getArg(argIndex).is<NamedAttribute *>());
-      return os << "operands[" << argIndex << "].getType()";
+      auto arg = op.getArgToOperandOrAttribute(argIndex);
+      if (arg.kind() == Operator::OperandOrAttribute::Kind::Operand)
+        return os << "operands[" << arg.operandOrAttributeIndex()
+                  << "].getType()";
+      return os << "attributes[" << arg.operandOrAttributeIndex()
+                << "].getType()";
     } else {
       return os << tgfmt(*type.getType().getBuilderCall(), &fctx);
     }
@@ -2128,13 +2137,20 @@ getAllDerivedDefinitions(const RecordKeeper &recordKeeper,
   if (!classDef)
     PrintFatalError("ERROR: Couldn't find the `" + className + "' class!\n");
 
-  llvm::Regex includeRegex(opFilter);
+  llvm::Regex includeRegex(opIncFilter), excludeRegex(opExcFilter);
   std::vector<Record *> defs;
   for (const auto &def : recordKeeper.getDefs()) {
-    if (def.second->isSubClassOf(classDef)) {
-      if (opFilter.empty() || includeRegex.match(getOperationName(*def.second)))
-        defs.push_back(def.second.get());
-    }
+    if (!def.second->isSubClassOf(classDef))
+      continue;
+    // Include if no include filter or include filter matches.
+    if (!opIncFilter.empty() &&
+        !includeRegex.match(getOperationName(*def.second)))
+      continue;
+    // Unless there is an exclude filter and it matches.
+    if (!opExcFilter.empty() &&
+        excludeRegex.match(getOperationName(*def.second)))
+      continue;
+    defs.push_back(def.second.get());
   }
 
   return defs;

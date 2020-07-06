@@ -37,6 +37,12 @@ def note_fe_backend_plugin: Note<"%0">, BackendInfo;
 def warn_fe_override_module : Warning<
     "overriding the module target triple with %0">,
     InGroup<DiagGroup<"override-module">>;
+def warn_fe_backend_unsupported_fp_rounding : Warning<
+    "overriding currently unsupported rounding mode on this target">,
+    InGroup<UnsupportedFPOpt>;
+def warn_fe_backend_unsupported_fp_exceptions : Warning<
+    "overriding currently unsupported use of floating point exceptions "
+    "on this target">, InGroup<UnsupportedFPOpt>;
 
 def remark_fe_backend_optimization_remark : Remark<"%0">, BackendInfo,
     InGroup<BackendOptimizationRemark>;
@@ -239,6 +245,12 @@ def err_builtin_needs_feature : Error<"%0 needs target feature %1">;
 def err_function_needs_feature : Error<
   "always_inline function %1 requires target feature '%2', but would "
   "be inlined into function %0 that is compiled without support for '%2'">;
+
+def warn_avx_calling_convention
+    : Warning<"AVX vector %select{return|argument}0 of type %1 without '%2' "
+              "enabled changes the ABI">,
+      InGroup<DiagGroup<"psabi">>;
+def err_avx_calling_convention : Error<warn_avx_calling_convention.Text>;
 
 def err_alias_to_undefined : Error<
   "%select{alias|ifunc}0 must point to a defined "

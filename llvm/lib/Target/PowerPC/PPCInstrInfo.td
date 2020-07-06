@@ -50,6 +50,10 @@ def SDT_PPCVecSplat : SDTypeProfile<1, 2, [ SDTCisVec<0>,
   SDTCisVec<1>, SDTCisInt<2>
 ]>;
 
+def SDT_PPCSpToDp : SDTypeProfile<1, 1, [ SDTCisVT<0, v2f64>,
+  SDTCisInt<1>
+]>;
+
 def SDT_PPCVecShift : SDTypeProfile<1, 3, [ SDTCisVec<0>,
   SDTCisVec<1>, SDTCisVec<2>, SDTCisPtrTy<3>
 ]>;
@@ -194,6 +198,7 @@ def PPCaddiDtprelL   : SDNode<"PPCISD::ADDI_DTPREL_L", SDTIntBinOp>;
 
 def PPCvperm     : SDNode<"PPCISD::VPERM", SDT_PPCvperm, []>;
 def PPCxxsplt    : SDNode<"PPCISD::XXSPLT", SDT_PPCVecSplat, []>;
+def PPCxxspltidp : SDNode<"PPCISD::XXSPLTI_SP_TO_DP", SDT_PPCSpToDp, []>;
 def PPCvecinsert : SDNode<"PPCISD::VECINSERT", SDT_PPCVecInsert, []>;
 def PPCxxpermdi  : SDNode<"PPCISD::XXPERMDI", SDT_PPCxxpermdi, []>;
 def PPCvecshl    : SDNode<"PPCISD::VECSHL", SDT_PPCVecShift, []>;
@@ -318,6 +323,7 @@ def SDTDynOp  : SDTypeProfile<1, 2, []>;
 def SDTDynAreaOp  : SDTypeProfile<1, 1, []>;
 def PPCdynalloc   : SDNode<"PPCISD::DYNALLOC", SDTDynOp, [SDNPHasChain]>;
 def PPCdynareaoffset   : SDNode<"PPCISD::DYNAREAOFFSET", SDTDynAreaOp, [SDNPHasChain]>;
+def PPCprobedalloca : SDNode<"PPCISD::PROBED_ALLOCA", SDTDynOp, [SDNPHasChain]>;
 
 // PC Relative Specific Nodes
 def PPCmatpcreladdr : SDNode<"PPCISD::MAT_PCREL_ADDR", SDTIntUnaryOp, []>;
@@ -325,6 +331,23 @@ def PPCmatpcreladdr : SDNode<"PPCISD::MAT_PCREL_ADDR", SDTIntUnaryOp, []>;
 //===----------------------------------------------------------------------===//
 // PowerPC specific transformation functions and pattern fragments.
 //
+
+// A floating point immediate that is not a positive zero and can be converted
+// to a single precision floating point non-denormal immediate without loss of
+// information.
+def nzFPImmAsi32 : PatLeaf<(fpimm), [{
+  APFloat APFloatOfN = N->getValueAPF();
+  return convertToNonDenormSingle(APFloatOfN) && !N->isExactlyValue(+0.0);
+}]>;
+
+// Convert the floating point immediate into a 32 bit floating point immediate
+// and get a i32 with the resulting bits.
+def getFPAs32BitInt : SDNodeXForm<fpimm, [{
+  APFloat APFloatOfN = N->getValueAPF();
+  convertToNonDenormSingle(APFloatOfN);
+  return CurDAG->getTargetConstant(APFloatOfN.bitcastToAPInt().getZExtValue(),
+                                   SDLoc(N), MVT::i32);
+}]>;
 
 def SHL32 : SDNodeXForm<imm, [{
   // Transformation function: 31 - imm
@@ -392,6 +415,7 @@ def immZExt16  : PatLeaf<(imm), [{
 def immNonAllOneAnyExt8 : ImmLeaf<i32, [{
   return (isInt<8>(Imm) && (Imm != -1)) || (isUInt<8>(Imm) && (Imm != 0xFF));
 }]>;
+def i32immNonAllOneNonZero : ImmLeaf<i32, [{ return Imm && (Imm != -1); }]>;
 def immSExt5NonZero : ImmLeaf<i32, [{ return Imm && isInt<5>(Imm); }]>;
 
 // imm16Shifted* - These match immediates where the low 16-bits are zero.  There
@@ -998,8 +1022,10 @@ def IsE500  : Predicate<"Subtarget->isE500()">;
 def HasSPE  : Predicate<"Subtarget->hasSPE()">;
 def HasICBT : Predicate<"Subtarget->hasICBT()">;
 def HasPartwordAtomics : Predicate<"Subtarget->hasPartwordAtomics()">;
-def NoNaNsFPMath : Predicate<"TM.Options.NoNaNsFPMath">;
-def NaNsFPMath   : Predicate<"!TM.Options.NoNaNsFPMath">;
+def NoNaNsFPMath
+    : Predicate<"Subtarget->getTargetMachine().Options.NoNaNsFPMath">;
+def NaNsFPMath
+    : Predicate<"!Subtarget->getTargetMachine().Options.NoNaNsFPMath">;
 def HasBPERMD : Predicate<"Subtarget->hasBPERMD()">;
 def HasExtDiv : Predicate<"Subtarget->hasExtDiv()">;
 def IsISA3_0 : Predicate<"Subtarget->isISA3_0()">;
@@ -1374,6 +1400,19 @@ def DYNALLOC : PPCEmitTimePseudo<(outs gprc:$result), (ins gprc:$negsize, memri:
                              (PPCdynalloc i32:$negsize, iaddr:$fpsi))]>;
 def DYNAREAOFFSET : PPCEmitTimePseudo<(outs i32imm:$result), (ins memri:$fpsi), "#DYNAREAOFFSET",
                        [(set i32:$result, (PPCdynareaoffset iaddr:$fpsi))]>;
+// Probed alloca to support stack clash protection.
+let Defs = [R1], Uses = [R1], hasNoSchedulingInfo = 1 in {
+def PROBED_ALLOCA_32 : PPCCustomInserterPseudo<(outs gprc:$result),
+                         (ins gprc:$negsize, memri:$fpsi), "#PROBED_ALLOCA_32",
+                           [(set i32:$result,
+                             (PPCprobedalloca i32:$negsize, iaddr:$fpsi))]>;
+def PREPARE_PROBED_ALLOCA_32 : PPCEmitTimePseudo<(outs gprc:$fp,
+    gprc:$sp),
+    (ins gprc:$negsize, memri:$fpsi), "#PREPARE_PROBED_ALLOCA_32", []>;
+def PROBED_STACKALLOC_32 : PPCEmitTimePseudo<(outs gprc:$scratch, gprc:$temp),
+    (ins i64imm:$stacksize),
+    "#PROBED_STACKALLOC_32", []>;
+}
 
 // SELECT_CC_* - Used to implement the SELECT_CC DAG operation.  Expanded after
 // instruction selection into a branch sequence.
@@ -1834,6 +1873,11 @@ def : Pat<(prefetch xoaddr:$dst, (i32 1), imm, (i32 1)),
           (DCBTST 0, xoaddr:$dst)>; // data prefetch for stores
 def : Pat<(prefetch xoaddr:$dst, (i32 0), imm, (i32 0)),
           (ICBT 0, xoaddr:$dst)>, Requires<[HasICBT]>; // inst prefetch (for read)
+
+def : Pat<(int_ppc_dcbt_with_hint xoaddr:$dst, i32:$TH),
+          (DCBT i32:$TH, xoaddr:$dst)>;
+def : Pat<(int_ppc_dcbtst_with_hint xoaddr:$dst, i32:$TH),
+          (DCBTST i32:$TH, xoaddr:$dst)>;
 
 // Atomic operations
 // FIXME: some of these might be used with constant operands. This will result
@@ -4506,6 +4550,7 @@ def DCBFx  : PPCAsmPseudo<"dcbf $dst", (ins memrr:$dst)>;
 def DCBFL  : PPCAsmPseudo<"dcbfl $dst", (ins memrr:$dst)>;
 def DCBFLP : PPCAsmPseudo<"dcbflp $dst", (ins memrr:$dst)>;
 
+def : Pat<(int_ppc_isync),  (ISYNC)>;
 def : Pat<(int_ppc_dcbfl xoaddr:$dst),
           (DCBF 1, xoaddr:$dst)>;
 def : Pat<(int_ppc_dcbflp xoaddr:$dst),

@@ -8386,6 +8386,7 @@ Value *CodeGenFunction::EmitAArch64SVEBuiltinExpr(unsigned BuiltinID,
   case SVE::BI__builtin_sve_svdupq_n_s64:
   case SVE::BI__builtin_sve_svdupq_n_u16:
   case SVE::BI__builtin_sve_svdupq_n_f16:
+  case SVE::BI__builtin_sve_svdupq_n_bf16:
   case SVE::BI__builtin_sve_svdupq_n_s16:
   case SVE::BI__builtin_sve_svdupq_n_u32:
   case SVE::BI__builtin_sve_svdupq_n_f32:
@@ -11687,7 +11688,7 @@ CodeGenFunction::GetX86CpuSupportsMask(ArrayRef<StringRef> FeatureStrs) {
   for (const StringRef &FeatureStr : FeatureStrs) {
     unsigned Feature =
         StringSwitch<unsigned>(FeatureStr)
-#define X86_FEATURE_COMPAT(ENUM, STR) .Case(STR, llvm::X86::ENUM)
+#define X86_FEATURE_COMPAT(ENUM, STR) .Case(STR, llvm::X86::FEATURE_##ENUM)
 #include "llvm/Support/X86TargetParser.def"
         ;
     FeaturesMask |= (1ULL << Feature);
@@ -14702,6 +14703,10 @@ Value *CodeGenFunction::EmitAMDGPUBuiltinExpr(unsigned BuiltinID,
   case AMDGPU::BI__builtin_amdgcn_rcpf:
   case AMDGPU::BI__builtin_amdgcn_rcph:
     return emitUnaryBuiltin(*this, E, Intrinsic::amdgcn_rcp);
+  case AMDGPU::BI__builtin_amdgcn_sqrt:
+  case AMDGPU::BI__builtin_amdgcn_sqrtf:
+  case AMDGPU::BI__builtin_amdgcn_sqrth:
+    return emitUnaryBuiltin(*this, E, Intrinsic::amdgcn_sqrt);
   case AMDGPU::BI__builtin_amdgcn_rsq:
   case AMDGPU::BI__builtin_amdgcn_rsqf:
   case AMDGPU::BI__builtin_amdgcn_rsqh:

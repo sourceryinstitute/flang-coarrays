@@ -830,8 +830,8 @@ def err_opencl_half_load_store : Error<
 def err_opencl_cast_to_half : Error<"casting to type %0 is not allowed">;
 def err_opencl_half_declaration : Error<
   "declaring variable of type %0 is not allowed">;
-def err_opencl_half_param : Error<
-  "declaring function parameter of type %0 is not allowed; did you forget * ?">;
+def err_opencl_invalid_param : Error<
+  "declaring function parameter of type %0 is not allowed%select{; did you forget * ?|}1">;
 def err_opencl_invalid_return : Error<
   "declaring function return value of type %0 is not allowed %select{; did you forget * ?|}1">;
 def warn_enum_value_overflow : Warning<"overflow in enumeration value">;
@@ -10527,6 +10527,9 @@ def err_await_suspend_invalid_return_type : Error<
 def note_await_ready_no_bool_conversion : Note<
   "return type of 'await_ready' is required to be contextually convertible to 'bool'"
 >;
+def warn_coroutine_handle_address_invalid_return_type : Warning <
+  "return type of 'coroutine_handle<>::address should be 'void*' (have %0) in order to get capability with existing async C API.">,
+  InGroup<Coroutine>;
 def err_coroutine_promise_final_suspend_requires_nothrow : Error<
   "the expression 'co_await __promise.final_suspend()' is required to be non-throwing"
 >;
