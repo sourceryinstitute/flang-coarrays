@@ -222,6 +222,8 @@ static constexpr IntrinsicDummyArgument OptionalDIM{
     "dim", {IntType, KindCode::dimArg}, Rank::scalar, Optionality::optional};
 static constexpr IntrinsicDummyArgument OptionalMASK{
     "mask", AnyLogical, Rank::conformable, Optionality::optional};
+static constexpr IntrinsicDummyArgument OptionalTEAM{
+    "team", TEAM_TYPE, Rank::scalar, Optionality::optional};
 
 struct IntrinsicInterface {
   static constexpr int maxArguments{7}; // if not a MAX/MIN(...)
@@ -691,6 +693,7 @@ static const IntrinsicInterface genericIntrinsicFunction[]{
     {"tan", {{"x", SameFloating}}, SameFloating},
     {"tand", {{"x", SameFloating}}, SameFloating},
     {"tanh", {{"x", SameFloating}}, SameFloating},
+    {"this_image", {{OptionalTEAM}}, DefaultInt, Rank::scalar, IntrinsicClass::transformationalFunction},
     {"tiny", {{"x", SameReal, Rank::anyOrAssumedRank}}, SameReal, Rank::scalar,
         IntrinsicClass::inquiryFunction},
     {"trailz", {{"i", AnyInt}}, DefaultInt},
