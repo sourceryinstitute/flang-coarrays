@@ -1378,8 +1378,14 @@ def warn_multiple_selectors: Warning<
   "several methods with selector %0 of mismatched types are found "
   "for the @selector expression">,
   InGroup<SelectorTypeMismatch>, DefaultIgnore;
-def err_direct_selector_expression: Error<
+def err_direct_selector_expression : Error<
   "@selector expression formed with direct selector %0">;
+def warn_potentially_direct_selector_expression : Warning<
+  "@selector expression formed with potentially direct selector %0">,
+  InGroup<ObjCPotentiallyDirectSelector>;
+def warn_strict_potentially_direct_selector_expression : Warning<
+  warn_potentially_direct_selector_expression.Text>,
+  InGroup<ObjCStrictPotentiallyDirectSelector>, DefaultIgnore;
 
 def err_objc_kindof_nonobject : Error<
   "'__kindof' specifier cannot be applied to non-object type %0">;
@@ -9342,6 +9348,8 @@ def err_x86_builtin_invalid_rounding : Error<
   "invalid rounding argument">;
 def err_x86_builtin_invalid_scale : Error<
   "scale argument must be 1, 2, 4, or 8">;
+def err_x86_builtin_tile_arg_duplicate : Error<
+  "tile arguments must refer to different tiles">;
 
 def err_builtin_target_unsupported : Error<
   "builtin is not supported on this target">;

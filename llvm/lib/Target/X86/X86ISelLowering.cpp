@@ -3763,12 +3763,13 @@ SDValue X86TargetLowering::LowerMemOpCallTo(SDValue Chain, SDValue StackPtr,
                                             SDValue Arg, const SDLoc &dl,
                                             SelectionDAG &DAG,
                                             const CCValAssign &VA,
-                                            ISD::ArgFlagsTy Flags) const {
+                                            ISD::ArgFlagsTy Flags,
+                                            bool isByVal) const {
   unsigned LocMemOffset = VA.getLocMemOffset();
   SDValue PtrOff = DAG.getIntPtrConstant(LocMemOffset, dl);
   PtrOff = DAG.getNode(ISD::ADD, dl, getPointerTy(DAG.getDataLayout()),
                        StackPtr, PtrOff);
-  if (Flags.isByVal())
+  if (isByVal)
     return CreateCopyOfByValArgument(Arg, PtrOff, Chain, Flags, DAG, dl);
 
   return DAG.getStore(
@@ -4080,7 +4081,7 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
         StackPtr = DAG.getCopyFromReg(Chain, dl, RegInfo->getStackRegister(),
                                       getPointerTy(DAG.getDataLayout()));
       MemOpChains.push_back(LowerMemOpCallTo(Chain, StackPtr, Arg,
-                                             dl, DAG, VA, Flags));
+                                             dl, DAG, VA, Flags, isByVal));
     }
   }
 
@@ -8001,10 +8002,11 @@ static SDValue LowerBuildVectorv16i8(SDValue Op, unsigned NonZeros,
         Elt = NextElt;
     }
 
-    // If our first insertion is not the first index then insert into zero
-    // vector to break any register dependency else use SCALAR_TO_VECTOR.
+    // If our first insertion is not the first index or zeros are needed, then
+    // insert into zero vector. Otherwise, use SCALAR_TO_VECTOR (leaves high
+    // elements undefined).
     if (!V) {
-      if (i != 0)
+      if (i != 0 || NumZero)
         V = getZeroVector(MVT::v8i16, Subtarget, DAG, dl);
       else {
         V = DAG.getNode(ISD::SCALAR_TO_VECTOR, dl, MVT::v4i32, Elt);
@@ -33044,6 +33046,10 @@ X86TargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
   const TargetInstrInfo *TII = Subtarget.getInstrInfo();
   DebugLoc DL = MI.getDebugLoc();
 
+  auto TMMImmToTMMReg = [](unsigned Imm) {
+    assert (Imm < 8 && "Illegal tmm index");
+    return X86::TMM0 + Imm;
+  };
   switch (MI.getOpcode()) {
   default: llvm_unreachable("Unexpected instr type to insert");
   case X86::TLS_addr32:
@@ -33324,6 +33330,67 @@ X86TargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
         BuildMI(*BB, MI, DL, TII->get(X86::LEA32r), MI.getOperand(0).getReg()),
         X86::ESP, false, ArgOffset);
     MI.eraseFromParent();
+    return BB;
+  }
+  case X86::PTDPBSSD:
+  case X86::PTDPBSUD:
+  case X86::PTDPBUSD:
+  case X86::PTDPBUUD:
+  case X86::PTDPBF16PS: {
+    const DebugLoc &DL = MI.getDebugLoc();
+    unsigned Opc;
+    switch (MI.getOpcode()) {
+    case X86::PTDPBSSD: Opc = X86::TDPBSSD; break;
+    case X86::PTDPBSUD: Opc = X86::TDPBSUD; break;
+    case X86::PTDPBUSD: Opc = X86::TDPBUSD; break;
+    case X86::PTDPBUUD: Opc = X86::TDPBUUD; break;
+    case X86::PTDPBF16PS: Opc = X86::TDPBF16PS; break;
+    }
+
+    MachineInstrBuilder MIB = BuildMI(*BB, MI, DL, TII->get(Opc));
+    MIB.addReg(TMMImmToTMMReg(MI.getOperand(0).getImm()), RegState::Define);
+    MIB.addReg(TMMImmToTMMReg(MI.getOperand(0).getImm()), RegState::Undef);
+    MIB.addReg(TMMImmToTMMReg(MI.getOperand(1).getImm()), RegState::Undef);
+    MIB.addReg(TMMImmToTMMReg(MI.getOperand(2).getImm()), RegState::Undef);
+
+    MI.eraseFromParent(); // The pseudo is gone now.
+    return BB;
+  }
+  case X86::PTILEZERO: {
+    const DebugLoc &DL = MI.getDebugLoc();
+    unsigned Imm = MI.getOperand(0).getImm();
+    BuildMI(*BB, MI, DL, TII->get(X86::TILEZERO), TMMImmToTMMReg(Imm));
+    MI.eraseFromParent(); // The pseudo is gone now.
+    return BB;
+  }
+  case X86::PTILELOADD:
+  case X86::PTILELOADDT1:
+  case X86::PTILESTORED: {
+    const DebugLoc &DL = MI.getDebugLoc();
+    unsigned Opc;
+    switch (MI.getOpcode()) {
+    case X86::PTILELOADD:   Opc = X86::TILELOADD;   break;
+    case X86::PTILELOADDT1: Opc = X86::TILELOADDT1; break;
+    case X86::PTILESTORED:  Opc = X86::TILESTORED;  break;
+    }
+
+    MachineInstrBuilder MIB = BuildMI(*BB, MI, DL, TII->get(Opc));
+    unsigned CurOp = 0;
+    if (Opc != X86::TILESTORED)
+      MIB.addReg(TMMImmToTMMReg(MI.getOperand(CurOp++).getImm()),
+                 RegState::Define);
+
+    MIB.add(MI.getOperand(CurOp++)); // base
+    MIB.add(MI.getOperand(CurOp++)); // scale
+    MIB.add(MI.getOperand(CurOp++)); // index -- stride
+    MIB.add(MI.getOperand(CurOp++)); // displacement
+    MIB.add(MI.getOperand(CurOp++)); // segment
+
+    if (Opc == X86::TILESTORED)
+      MIB.addReg(TMMImmToTMMReg(MI.getOperand(CurOp++).getImm()),
+                 RegState::Undef);
+
+    MI.eraseFromParent(); // The pseudo is gone now.
     return BB;
   }
   }
@@ -36868,11 +36935,16 @@ bool X86TargetLowering::SimplifyDemandedVectorEltsForTargetShuffle(
     return false;
 
   const Constant *C = getTargetConstantFromNode(Load);
-  if (!C || !C->getType()->isVectorTy())
+  if (!C)
+    return false;
+
+  Type *CTy = C->getType();
+  if (!CTy->isVectorTy() ||
+      CTy->getPrimitiveSizeInBits() != Mask.getValueSizeInBits())
     return false;
 
   // Handle scaling for i64 elements on 32-bit targets.
-  unsigned NumCstElts = cast<FixedVectorType>(C->getType())->getNumElements();
+  unsigned NumCstElts = cast<FixedVectorType>(CTy)->getNumElements();
   if (NumCstElts != NumElts && NumCstElts != (NumElts * 2))
     return false;
   unsigned Scale = NumCstElts / NumElts;
@@ -38896,9 +38968,6 @@ static SDValue combineExtractWithShuffle(SDNode *N, SelectionDAG &DAG,
   // Handle extract(bitcast(broadcast(scalar_value))).
   if (X86ISD::VBROADCAST == SrcBC.getOpcode()) {
     SDValue SrcOp = SrcBC.getOperand(0);
-    if (SrcOp.getValueSizeInBits() == VT.getSizeInBits())
-      return DAG.getBitcast(VT, SrcOp);
-
     EVT SrcOpVT = SrcOp.getValueType();
     if (SrcOpVT.isScalarInteger() && VT.isInteger() &&
         (SrcOpVT.getSizeInBits() % SrcEltBits) == 0) {
@@ -38919,7 +38988,7 @@ static SDValue combineExtractWithShuffle(SDNode *N, SelectionDAG &DAG,
     auto *MemIntr = cast<MemIntrinsicSDNode>(SrcBC);
     unsigned SrcBCWidth = SrcBC.getScalarValueSizeInBits();
     if (MemIntr->getMemoryVT().getSizeInBits() == SrcBCWidth &&
-        VT.getSizeInBits() == SrcBCWidth) {
+        VT.getSizeInBits() == SrcBCWidth && SrcEltBits == SrcBCWidth) {
       SDValue Load = DAG.getLoad(VT, dl, MemIntr->getChain(),
                                  MemIntr->getBasePtr(),
                                  MemIntr->getPointerInfo(),
@@ -40242,17 +40311,41 @@ static SDValue combineSelect(SDNode *N, SelectionDAG &DAG,
       cast<CondCodeSDNode>(Cond.getOperand(2))->get() == ISD::SETEQ &&
       Cond.getOperand(0).getValueType() == VT) {
     // The 'and' mask must be composed of power-of-2 constants.
-    // TODO: This is limited to splats because the availability/lowering of
-    //       non-uniform shifts and variable blend types is lumpy. Supporting
-    //       arbitrary power-of-2 vector constants will make the code more
-    //       complicated and may require target limitations to ensure that the
-    //       transform is profitable.
-    auto *C = isConstOrConstSplat(Cond.getOperand(0).getOperand(1));
+    SDValue And = Cond.getOperand(0);
+    auto *C = isConstOrConstSplat(And.getOperand(1));
     if (C && C->getAPIntValue().isPowerOf2()) {
       // vselect (X & C == 0), LHS, RHS --> vselect (X & C != 0), RHS, LHS
-      SDValue NotCond = DAG.getSetCC(DL, CondVT, Cond.getOperand(0),
-                                     Cond.getOperand(1), ISD::SETNE);
+      SDValue NotCond =
+          DAG.getSetCC(DL, CondVT, And, Cond.getOperand(1), ISD::SETNE);
       return DAG.getSelect(DL, VT, NotCond, RHS, LHS);
+    }
+
+    // If we have a non-splat but still powers-of-2 mask, AVX1 can use pmulld
+    // and AVX2 can use vpsllv{dq}. 8-bit lacks a proper shift or multiply.
+    // 16-bit lacks a proper blendv.
+    unsigned EltBitWidth = VT.getScalarSizeInBits();
+    bool CanShiftBlend =
+        TLI.isTypeLegal(VT) && ((Subtarget.hasAVX() && EltBitWidth == 32) ||
+                                (Subtarget.hasAVX2() && EltBitWidth == 64) ||
+                                (Subtarget.hasXOP()));
+    if (CanShiftBlend &&
+        ISD::matchUnaryPredicate(And.getOperand(1), [](ConstantSDNode *C) {
+          return C->getAPIntValue().isPowerOf2();
+        })) {
+      // Create a left-shift constant to get the mask bits over to the sign-bit.
+      SDValue Mask = And.getOperand(1);
+      SmallVector<int, 32> ShlVals;
+      for (unsigned i = 0, e = VT.getVectorNumElements(); i != e; ++i) {
+        auto *MaskVal = cast<ConstantSDNode>(Mask.getOperand(i));
+        ShlVals.push_back(EltBitWidth - 1 -
+                          MaskVal->getAPIntValue().exactLogBase2());
+      }
+      // vsel ((X & C) == 0), LHS, RHS --> vsel ((shl X, C') < 0), RHS, LHS
+      SDValue ShlAmt = getConstVector(ShlVals, VT.getSimpleVT(), DAG, DL);
+      SDValue Shl = DAG.getNode(ISD::SHL, DL, VT, And.getOperand(0), ShlAmt);
+      SDValue NewCond =
+          DAG.getSetCC(DL, CondVT, Shl, Cond.getOperand(1), ISD::SETLT);
+      return DAG.getSelect(DL, VT, NewCond, RHS, LHS);
     }
   }
 

@@ -2371,6 +2371,16 @@ SDValue DAGCombiner::visitADD(SDNode *N) {
     return DAG.getVScale(DL, VT, C0 + C1);
   }
 
+  // fold a+vscale(c1)+vscale(c2) -> a+vscale(c1+c2)
+  if ((N0.getOpcode() == ISD::ADD) &&
+      (N0.getOperand(1).getOpcode() == ISD::VSCALE) &&
+      (N1.getOpcode() == ISD::VSCALE)) {
+    auto VS0 = N0.getOperand(1)->getConstantOperandAPInt(0);
+    auto VS1 = N1->getConstantOperandAPInt(0);
+    auto VS = DAG.getVScale(DL, VT, VS0 + VS1);
+    return DAG.getNode(ISD::ADD, DL, VT, N0.getOperand(0), VS);
+  }
+
   return SDValue();
 }
 
@@ -17833,8 +17843,11 @@ SDValue DAGCombiner::visitEXTRACT_VECTOR_ELT(SDNode *N) {
       Elt = (Idx < (int)NumElts) ? Idx : Idx - (int)NumElts;
       Index = DAG.getConstant(Elt, DL, Index.getValueType());
     }
-  } else if (VecOp.getOpcode() == ISD::CONCAT_VECTORS &&
-             !BCNumEltsChanged && VecVT.getVectorElementType() == ScalarVT) {
+  } else if (VecOp.getOpcode() == ISD::CONCAT_VECTORS && !BCNumEltsChanged &&
+             VecVT.getVectorElementType() == ScalarVT &&
+             (!LegalTypes ||
+              TLI.isTypeLegal(
+                  VecOp.getOperand(0).getValueType().getVectorElementType()))) {
     // extract_vector_elt (concat_vectors v2i16:a, v2i16:b), 0
     //      -> extract_vector_elt a, 0
     // extract_vector_elt (concat_vectors v2i16:a, v2i16:b), 1
