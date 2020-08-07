@@ -35,11 +35,12 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include <cstdlib>
+#include <memory>
 
 using namespace clang;
 
 namespace {
-static llvm::ArrayRef<syntax::Token> tokens(syntax::Node *N) {
+static ArrayRef<syntax::Token> tokens(syntax::Node *N) {
   assert(N->isOriginal() && "tokens of modified nodes are not well-defined");
   if (auto *L = dyn_cast<syntax::Leaf>(N))
     return llvm::makeArrayRef(L->token(), 1);
@@ -52,29 +53,32 @@ class SyntaxTreeTest : public ::testing::Test,
                        public ::testing::WithParamInterface<TestClangConfig> {
 protected:
   // Build a syntax tree for the code.
-  syntax::TranslationUnit *buildTree(llvm::StringRef Code,
+  syntax::TranslationUnit *buildTree(StringRef Code,
                                      const TestClangConfig &ClangConfig) {
     // FIXME: this code is almost the identical to the one in TokensTest. Share
     //        it.
     class BuildSyntaxTree : public ASTConsumer {
     public:
       BuildSyntaxTree(syntax::TranslationUnit *&Root,
+                      std::unique_ptr<syntax::TokenBuffer> &TB,
                       std::unique_ptr<syntax::Arena> &Arena,
                       std::unique_ptr<syntax::TokenCollector> Tokens)
-          : Root(Root), Arena(Arena), Tokens(std::move(Tokens)) {
+          : Root(Root), TB(TB), Arena(Arena), Tokens(std::move(Tokens)) {
         assert(this->Tokens);
       }
 
       void HandleTranslationUnit(ASTContext &Ctx) override {
-        Arena = std::make_unique<syntax::Arena>(Ctx.getSourceManager(),
-                                                Ctx.getLangOpts(),
-                                                std::move(*Tokens).consume());
+        TB =
+            std::make_unique<syntax::TokenBuffer>(std::move(*Tokens).consume());
         Tokens = nullptr; // make sure we fail if this gets called twice.
+        Arena = std::make_unique<syntax::Arena>(Ctx.getSourceManager(),
+                                                Ctx.getLangOpts(), *TB);
         Root = syntax::buildSyntaxTree(*Arena, *Ctx.getTranslationUnitDecl());
       }
 
     private:
       syntax::TranslationUnit *&Root;
+      std::unique_ptr<syntax::TokenBuffer> &TB;
       std::unique_ptr<syntax::Arena> &Arena;
       std::unique_ptr<syntax::TokenCollector> Tokens;
     };
@@ -82,20 +86,22 @@ protected:
     class BuildSyntaxTreeAction : public ASTFrontendAction {
     public:
       BuildSyntaxTreeAction(syntax::TranslationUnit *&Root,
+                            std::unique_ptr<syntax::TokenBuffer> &TB,
                             std::unique_ptr<syntax::Arena> &Arena)
-          : Root(Root), Arena(Arena) {}
+          : Root(Root), TB(TB), Arena(Arena) {}
 
       std::unique_ptr<ASTConsumer>
       CreateASTConsumer(CompilerInstance &CI, StringRef InFile) override {
         // We start recording the tokens, ast consumer will take on the result.
         auto Tokens =
             std::make_unique<syntax::TokenCollector>(CI.getPreprocessor());
-        return std::make_unique<BuildSyntaxTree>(Root, Arena,
+        return std::make_unique<BuildSyntaxTree>(Root, TB, Arena,
                                                  std::move(Tokens));
       }
 
     private:
       syntax::TranslationUnit *&Root;
+      std::unique_ptr<syntax::TokenBuffer> &TB;
       std::unique_ptr<syntax::Arena> &Arena;
     };
 
@@ -132,7 +138,7 @@ protected:
     Compiler.setSourceManager(SourceMgr.get());
 
     syntax::TranslationUnit *Root = nullptr;
-    BuildSyntaxTreeAction Recorder(Root, this->Arena);
+    BuildSyntaxTreeAction Recorder(Root, this->TB, this->Arena);
 
     // Action could not be executed but the frontend didn't identify any errors
     // in the code ==> problem in setting up the action.
@@ -163,7 +169,7 @@ protected:
   }
 
   // Adds a file to the test VFS.
-  void addFile(llvm::StringRef Path, llvm::StringRef Contents) {
+  void addFile(StringRef Path, StringRef Contents) {
     if (!FS->addFile(Path, time_t(),
                      llvm::MemoryBuffer::getMemBufferCopy(Contents))) {
       ADD_FAILURE() << "could not add a file to VFS: " << Path;
@@ -173,7 +179,7 @@ protected:
   /// Finds the deepest node in the tree that covers exactly \p R.
   /// FIXME: implement this efficiently and move to public syntax tree API.
   syntax::Node *nodeByRange(llvm::Annotations::Range R, syntax::Node *Root) {
-    llvm::ArrayRef<syntax::Token> Toks = tokens(Root);
+    ArrayRef<syntax::Token> Toks = tokens(Root);
 
     if (Toks.front().location().isFileID() &&
         Toks.back().location().isFileID() &&
@@ -192,18 +198,18 @@ protected:
   }
 
   // Data fields.
-  llvm::IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts =
-      new DiagnosticOptions();
-  llvm::IntrusiveRefCntPtr<DiagnosticsEngine> Diags =
+  IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions();
+  IntrusiveRefCntPtr<DiagnosticsEngine> Diags =
       new DiagnosticsEngine(new DiagnosticIDs, DiagOpts.get());
   IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> FS =
       new llvm::vfs::InMemoryFileSystem;
-  llvm::IntrusiveRefCntPtr<FileManager> FileMgr =
+  IntrusiveRefCntPtr<FileManager> FileMgr =
       new FileManager(FileSystemOptions(), FS);
-  llvm::IntrusiveRefCntPtr<SourceManager> SourceMgr =
+  IntrusiveRefCntPtr<SourceManager> SourceMgr =
       new SourceManager(*Diags, *FileMgr);
   std::shared_ptr<CompilerInvocation> Invocation;
   // Set after calling buildTree().
+  std::unique_ptr<syntax::TokenBuffer> TB;
   std::unique_ptr<syntax::Arena> Arena;
 };
 
@@ -1184,20 +1190,139 @@ void test() {
 )txt"));
 }
 
-TEST_P(SyntaxTreeTest, IntegerLiteral) {
+TEST_P(SyntaxTreeTest, UserDefinedLiteral) {
+  if (!GetParam().isCXX11OrLater()) {
+    return;
+  }
   EXPECT_TRUE(treeDumpEqual(
       R"cpp(
+typedef decltype(sizeof(void *)) size_t;
+
+unsigned operator "" _i(unsigned long long);
+unsigned operator "" _f(long double);
+unsigned operator "" _c(char);
+unsigned operator "" _s(const char*, size_t);
+unsigned operator "" _r(const char*);
+template <char...>
+unsigned operator "" _t();
+
 void test() {
-  12;
-  12u;
-  12l;
-  12ul;
-  014;
-  0XC;
+  12_i;   // call: operator "" _i(12uLL)      | kind: integer
+  1.2_f;  // call: operator "" _f(1.2L)       | kind: float
+  '2'_c;  // call: operator "" _c('2')        | kind: char
+  "12"_s; // call: operator "" _s("12")       | kind: string
+
+  12_r;   // call: operator "" _r("12")       | kind: integer
+  1.2_r;  // call: operator "" _i("1.2")      | kind: float
+  12_t;   // call: operator<'1', '2'> "" _x() | kind: integer
+  1.2_t;  // call: operator<'1', '2'> "" _x() | kind: float
 }
-)cpp",
+    )cpp",
       R"txt(
 *: TranslationUnit
+|-SimpleDeclaration
+| |-typedef
+| |-decltype
+| |-(
+| |-UnknownExpression
+| | |-sizeof
+| | |-(
+| | |-void
+| | |-*
+| | `-)
+| |-)
+| |-SimpleDeclarator
+| | `-size_t
+| `-;
+|-SimpleDeclaration
+| |-unsigned
+| |-SimpleDeclarator
+| | |-operator
+| | |-""
+| | |-_i
+| | `-ParametersAndQualifiers
+| |   |-(
+| |   |-SimpleDeclaration
+| |   | |-unsigned
+| |   | |-long
+| |   | `-long
+| |   `-)
+| `-;
+|-SimpleDeclaration
+| |-unsigned
+| |-SimpleDeclarator
+| | |-operator
+| | |-""
+| | |-_f
+| | `-ParametersAndQualifiers
+| |   |-(
+| |   |-SimpleDeclaration
+| |   | |-long
+| |   | `-double
+| |   `-)
+| `-;
+|-SimpleDeclaration
+| |-unsigned
+| |-SimpleDeclarator
+| | |-operator
+| | |-""
+| | |-_c
+| | `-ParametersAndQualifiers
+| |   |-(
+| |   |-SimpleDeclaration
+| |   | `-char
+| |   `-)
+| `-;
+|-SimpleDeclaration
+| |-unsigned
+| |-SimpleDeclarator
+| | |-operator
+| | |-""
+| | |-_s
+| | `-ParametersAndQualifiers
+| |   |-(
+| |   |-SimpleDeclaration
+| |   | |-const
+| |   | |-char
+| |   | `-SimpleDeclarator
+| |   |   `-*
+| |   |-,
+| |   |-SimpleDeclaration
+| |   | `-size_t
+| |   `-)
+| `-;
+|-SimpleDeclaration
+| |-unsigned
+| |-SimpleDeclarator
+| | |-operator
+| | |-""
+| | |-_r
+| | `-ParametersAndQualifiers
+| |   |-(
+| |   |-SimpleDeclaration
+| |   | |-const
+| |   | |-char
+| |   | `-SimpleDeclarator
+| |   |   `-*
+| |   `-)
+| `-;
+|-TemplateDeclaration
+| |-template
+| |-<
+| |-SimpleDeclaration
+| | `-char
+| |-...
+| |->
+| `-SimpleDeclaration
+|   |-unsigned
+|   |-SimpleDeclarator
+|   | |-operator
+|   | |-""
+|   | |-_t
+|   | `-ParametersAndQualifiers
+|   |   |-(
+|   |   `-)
+|   `-;
 `-SimpleDeclaration
   |-void
   |-SimpleDeclarator
@@ -1208,28 +1333,36 @@ void test() {
   `-CompoundStatement
     |-{
     |-ExpressionStatement
-    | |-IntegerLiteralExpression
-    | | `-12
+    | |-IntegerUserDefinedLiteralExpression
+    | | `-12_i
     | `-;
     |-ExpressionStatement
-    | |-IntegerLiteralExpression
-    | | `-12u
+    | |-FloatUserDefinedLiteralExpression
+    | | `-1.2_f
     | `-;
     |-ExpressionStatement
-    | |-IntegerLiteralExpression
-    | | `-12l
+    | |-CharUserDefinedLiteralExpression
+    | | `-'2'_c
     | `-;
     |-ExpressionStatement
-    | |-IntegerLiteralExpression
-    | | `-12ul
+    | |-StringUserDefinedLiteralExpression
+    | | `-"12"_s
     | `-;
     |-ExpressionStatement
-    | |-IntegerLiteralExpression
-    | | `-014
+    | |-IntegerUserDefinedLiteralExpression
+    | | `-12_r
     | `-;
     |-ExpressionStatement
-    | |-IntegerLiteralExpression
-    | | `-0XC
+    | |-FloatUserDefinedLiteralExpression
+    | | `-1.2_r
+    | `-;
+    |-ExpressionStatement
+    | |-IntegerUserDefinedLiteralExpression
+    | | `-12_t
+    | `-;
+    |-ExpressionStatement
+    | |-FloatUserDefinedLiteralExpression
+    | | `-1.2_t
     | `-;
     `-}
 )txt"));
@@ -2195,16 +2328,17 @@ struct X {
   friend bool operator<(const X&, const X&);
   friend X operator<<(X&, const X&);
   X operator,(X&);
-  // TODO: Fix crash on member function pointer and add a test for `->*`
-  // TODO: Unbox operators in syntax tree. 
+  X operator->*(int);
+  // TODO: Unbox operators in syntax tree.
   // Represent operators by `+` instead of `IdExpression-UnqualifiedId-+`
 };
-void test(X x, X y) {
+void test(X x, X y, X* xp, int X::* pmi) {
   x = y;
   x + y;
   x < y;
   x << y;
   x, y;
+  xp->*pmi;
 }
 )cpp",
       R"txt(
@@ -2303,6 +2437,17 @@ void test(X x, X y) {
 | | |   |   `-&
 | | |   `-)
 | | `-;
+| |-SimpleDeclaration
+| | |-X
+| | |-SimpleDeclarator
+| | | |-operator
+| | | |-->*
+| | | `-ParametersAndQualifiers
+| | |   |-(
+| | |   |-SimpleDeclaration
+| | |   | `-int
+| | |   `-)
+| | `-;
 | |-}
 | `-;
 `-SimpleDeclaration
@@ -2320,6 +2465,21 @@ void test(X x, X y) {
   |   | |-X
   |   | `-SimpleDeclarator
   |   |   `-y
+  |   |-,
+  |   |-SimpleDeclaration
+  |   | |-X
+  |   | `-SimpleDeclarator
+  |   |   |-*
+  |   |   `-xp
+  |   |-,
+  |   |-SimpleDeclaration
+  |   | |-int
+  |   | `-SimpleDeclarator
+  |   |   |-MemberPointer
+  |   |   | |-X
+  |   |   | |-::
+  |   |   | `-*
+  |   |   `-pmi
   |   `-)
   `-CompoundStatement
     |-{
@@ -2383,6 +2543,16 @@ void test(X x, X y) {
     | | `-IdExpression
     | |   `-UnqualifiedId
     | |     `-y
+    | `-;
+    |-ExpressionStatement
+    | |-BinaryOperatorExpression
+    | | |-IdExpression
+    | | | `-UnqualifiedId
+    | | |   `-xp
+    | | |-->*
+    | | `-IdExpression
+    | |   `-UnqualifiedId
+    | |     `-pmi
     | `-;
     `-}
 )txt"));
@@ -3936,6 +4106,99 @@ const int X::* b;
   | | |-::
   | | `-*
   | `-b
+  `-;
+)txt"));
+}
+
+TEST_P(SyntaxTreeTest, MemberFunctionPointer) {
+  if (!GetParam().isCXX()) {
+    return;
+  }
+  EXPECT_TRUE(treeDumpEqual(
+      R"cpp(
+struct X {
+  struct Y {};
+};
+void (X::*xp)();
+void (X::**xpp)(const int*);
+// FIXME: Generate the right syntax tree for this type,
+// i.e. create a syntax node for the outer member pointer
+void (X::Y::*xyp)(const int*, char);
+)cpp",
+      R"txt(
+*: TranslationUnit
+|-SimpleDeclaration
+| |-struct
+| |-X
+| |-{
+| |-SimpleDeclaration
+| | |-struct
+| | |-Y
+| | |-{
+| | |-}
+| | `-;
+| |-}
+| `-;
+|-SimpleDeclaration
+| |-void
+| |-SimpleDeclarator
+| | |-ParenDeclarator
+| | | |-(
+| | | |-MemberPointer
+| | | | |-X
+| | | | |-::
+| | | | `-*
+| | | |-xp
+| | | `-)
+| | `-ParametersAndQualifiers
+| |   |-(
+| |   `-)
+| `-;
+|-SimpleDeclaration
+| |-void
+| |-SimpleDeclarator
+| | |-ParenDeclarator
+| | | |-(
+| | | |-MemberPointer
+| | | | |-X
+| | | | |-::
+| | | | `-*
+| | | |-*
+| | | |-xpp
+| | | `-)
+| | `-ParametersAndQualifiers
+| |   |-(
+| |   |-SimpleDeclaration
+| |   | |-const
+| |   | |-int
+| |   | `-SimpleDeclarator
+| |   |   `-*
+| |   `-)
+| `-;
+`-SimpleDeclaration
+  |-void
+  |-SimpleDeclarator
+  | |-ParenDeclarator
+  | | |-(
+  | | |-X
+  | | |-::
+  | | |-MemberPointer
+  | | | |-Y
+  | | | |-::
+  | | | `-*
+  | | |-xyp
+  | | `-)
+  | `-ParametersAndQualifiers
+  |   |-(
+  |   |-SimpleDeclaration
+  |   | |-const
+  |   | |-int
+  |   | `-SimpleDeclarator
+  |   |   `-*
+  |   |-,
+  |   |-SimpleDeclaration
+  |   | `-char
+  |   `-)
   `-;
 )txt"));
 }

@@ -112,8 +112,7 @@ struct SPIRVInlinerInterface : public DialectInlinerInterface {
 // SPIR-V Dialect
 //===----------------------------------------------------------------------===//
 
-SPIRVDialect::SPIRVDialect(MLIRContext *context)
-    : Dialect(getDialectNamespace(), context) {
+void SPIRVDialect::initialize() {
   addTypes<ArrayType, CooperativeMatrixNVType, ImageType, MatrixType,
            PointerType, RuntimeArrayType, StructType>();
 
@@ -1102,8 +1101,7 @@ LogicalResult SPIRVDialect::verifyRegionArgAttribute(Operation *op,
                                                      unsigned argIndex,
                                                      NamedAttribute attribute) {
   return verifyRegionAttribute(
-      op->getLoc(),
-      op->getRegion(regionIndex).front().getArgument(argIndex).getType(),
+      op->getLoc(), op->getRegion(regionIndex).getArgument(argIndex).getType(),
       attribute);
 }
 

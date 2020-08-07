@@ -1132,9 +1132,10 @@ std::optional<SpecificCall> IntrinsicInterface::Match(
             d.rank == Rank::elementalOrBOZ) {
           continue;
         } else {
+          const IntrinsicDummyArgument &nextParam{dummy[j + 1]};
           messages.Say(
-              "Typeless (BOZ) not allowed for '%s=' argument"_err_en_US,
-              d.keyword);
+              "Typeless (BOZ) not allowed for both '%s=' & '%s=' arguments"_err_en_US, // C7109
+              d.keyword, nextParam.keyword);
         }
       } else {
         // NULL(), procedure, or procedure pointer
@@ -1261,7 +1262,11 @@ std::optional<SpecificCall> IntrinsicInterface::Match(
         break;
       case Rank::shape:
         CHECK(!shapeArgSize);
-        if (rank == 1) {
+        if (rank != 1) {
+          messages.Say(
+              "'shape=' argument must be an array of rank 1"_err_en_US);
+          return std::nullopt;
+        } else {
           if (auto shape{GetShape(context, *arg)}) {
             if (auto constShape{AsConstantShape(context, *shape)}) {
               shapeArgSize = constShape->At(ConstantSubscripts{1}).ToInt64();
@@ -1571,6 +1576,7 @@ public:
   bool IsIntrinsic(const std::string &) const;
 
   IntrinsicClass GetIntrinsicClass(const std::string &) const;
+  std::string GetGenericIntrinsicName(const std::string &) const;
 
   std::optional<SpecificCall> Probe(const CallCharacteristics &,
       ActualArguments &, FoldingContext &, const IntrinsicProcTable &) const;
@@ -1626,6 +1632,17 @@ IntrinsicClass IntrinsicProcTable::Implementation::GetIntrinsicClass(
     return subrIntrinsic->second->intrinsicClass;
   }
   return IntrinsicClass::noClass;
+}
+
+std::string IntrinsicProcTable::Implementation::GetGenericIntrinsicName(
+    const std::string &name) const {
+  auto specificIntrinsic{specificFuncs_.find(name)};
+  if (specificIntrinsic != specificFuncs_.end()) {
+    if (const char *genericName{specificIntrinsic->second->generic}) {
+      return {genericName};
+    }
+  }
+  return name;
 }
 
 bool CheckAndRearrangeArguments(ActualArguments &arguments,
@@ -2076,6 +2093,11 @@ bool IntrinsicProcTable::IsIntrinsic(const std::string &name) const {
 IntrinsicClass IntrinsicProcTable::GetIntrinsicClass(
     const std::string &name) const {
   return DEREF(impl_).GetIntrinsicClass(name);
+}
+
+std::string IntrinsicProcTable::GetGenericIntrinsicName(
+    const std::string &name) const {
+  return DEREF(impl_).GetGenericIntrinsicName(name);
 }
 
 std::optional<SpecificCall> IntrinsicProcTable::Probe(

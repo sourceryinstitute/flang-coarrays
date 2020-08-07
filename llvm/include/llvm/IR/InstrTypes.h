@@ -805,7 +805,9 @@ public:
   void setPredicate(Predicate P) { setSubclassData<PredicateField>(P); }
 
   static bool isFPPredicate(Predicate P) {
-    return P >= FIRST_FCMP_PREDICATE && P <= LAST_FCMP_PREDICATE;
+    assert(FIRST_FCMP_PREDICATE == 0 &&
+           "FIRST_FCMP_PREDICATE is required to be 0");
+    return P <= LAST_FCMP_PREDICATE;
   }
 
   static bool isIntPredicate(Predicate P) {
@@ -1391,14 +1393,18 @@ public:
   ///
   void setAttributes(AttributeList A) { Attrs = A; }
 
-  /// Determine whether this call has the given attribute.
+  /// Determine whether this call has the given attribute. If it does not
+  /// then determine if the called function has the attribute, but only if
+  /// the attribute is allowed for the call.
   bool hasFnAttr(Attribute::AttrKind Kind) const {
     assert(Kind != Attribute::NoBuiltin &&
            "Use CallBase::isNoBuiltin() to check for Attribute::NoBuiltin");
     return hasFnAttrImpl(Kind);
   }
 
-  /// Determine whether this call has the given attribute.
+  /// Determine whether this call has the given attribute. If it does not
+  /// then determine if the called function has the attribute, but only if
+  /// the attribute is allowed for the call.
   bool hasFnAttr(StringRef Kind) const { return hasFnAttrImpl(Kind); }
 
   /// adds the attribute to the list of attributes.
@@ -1442,6 +1448,12 @@ public:
   void removeAttribute(unsigned i, StringRef Kind) {
     AttributeList PAL = getAttributes();
     PAL = PAL.removeAttribute(getContext(), i, Kind);
+    setAttributes(PAL);
+  }
+
+  void removeAttributes(unsigned i, const AttrBuilder &Attrs) {
+    AttributeList PAL = getAttributes();
+    PAL = PAL.removeAttributes(getContext(), i, Attrs);
     setAttributes(PAL);
   }
 
